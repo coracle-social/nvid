@@ -39,21 +39,43 @@ export type Broadcast = {
   stop: () => void
 }
 
-const VIDEO_CANDIDATES = [
+// VP8 over VP9 by default: it encodes faster at these bitrates and is the safest bet for
+// MediaSource support on the playback side.
+const VIDEO_AUDIO_CANDIDATES = [
   'video/webm;codecs=vp8,opus',
   'video/webm;codecs=vp9,opus',
-  'video/webm;codecs=vp8',
   'video/webm',
 ]
 
-const AUDIO_CANDIDATES = ['audio/webm;codecs=opus', 'audio/webm']
+const VIDEO_ONLY_CANDIDATES = ['video/webm;codecs=vp8', 'video/webm;codecs=vp9', 'video/webm']
+
+const AUDIO_ONLY_CANDIDATES = ['audio/webm;codecs=opus', 'audio/webm']
 
 /**
- * VP8 over VP9 by default: it encodes faster at these bitrates and is the safest bet for
- * MediaSource support on the playback side.
+ * The codec string has to describe the tracks the stream *actually* has, not the ones we'd
+ * like it to have.
+ *
+ * Firefox takes the requested mime type literally: ask for `vp8,opus` on a stream with no
+ * audio track and it reports isTypeSupported → true, constructs the recorder, sits in state
+ * "recording", and then emits **nothing at all** — no data, no error. Chromium quietly drops
+ * the impossible codec and records anyway, which is what hid this.
+ *
+ * That combination bit screen sharing specifically: Firefox won't capture system audio, so a
+ * screen share is video-only, while camera (video+audio) and mic (audio) both happened to
+ * match. Selecting on video-track presence alone was the bug.
  */
 export function pickMimeType(stream: MediaStream): string | undefined {
-  const candidates = stream.getVideoTracks().length ? VIDEO_CANDIDATES : AUDIO_CANDIDATES
+  const hasVideo = stream.getVideoTracks().length > 0
+  const hasAudio = stream.getAudioTracks().length > 0
+
+  if (!hasVideo && !hasAudio) return undefined
+
+  const candidates = !hasVideo
+    ? AUDIO_ONLY_CANDIDATES
+    : hasAudio
+      ? VIDEO_AUDIO_CANDIDATES
+      : VIDEO_ONLY_CANDIDATES
+
   return candidates.find(type => MediaRecorder.isTypeSupported(type))
 }
 

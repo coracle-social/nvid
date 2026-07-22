@@ -134,6 +134,28 @@ That asymmetry drives most of the design:
 Streams are addressed by their `t` tag, not by author, so each tab signs with a throwaway key
 held in `sessionStorage`. A NIP-07 extension would mean a permission prompt per chunk.
 
+### The codec string must describe the tracks you actually have
+
+Firefox takes the requested mime type literally. Ask for `video/webm;codecs=vp8,opus` on a
+stream with no audio track and it reports `isTypeSupported` → true, constructs the recorder,
+reports state `"recording"`, and then emits **nothing at all** — no data, no error:
+
+| mime, video-only stream (Firefox 151) | isTypeSupported | data events | bytes |
+|---|---|---|---|
+| `video/webm;codecs=vp8,opus` | true | **0** | **0** |
+| `video/webm;codecs=vp8` | true | 11 | 3655 |
+
+Chromium quietly drops the impossible codec and records anyway. So selecting the codec on
+video-track presence alone — ignoring whether audio existed — was invisible in Chromium and
+fatal in Firefox, for screen sharing specifically: Firefox won't capture system audio, so a
+screen share is video-only, while camera (video+audio) and mic (audio-only) both happened to
+match. `pickMimeType` now branches on both track types.
+
+`pnpm test:codec` is the regression guard, and it runs in **both** engines, because a
+Chromium-only suite reported this as healthy. Note that asserting `isTypeSupported` would not
+have caught it either — Firefox returns true for the broken combination. The only assertion
+that works is "bytes actually came out".
+
 ### Don't gate the connection behind the media
 
 The relay connection is opened when the broadcast starts, not lazily on the first publish. It
@@ -162,8 +184,14 @@ which suits a streaming PoC. Measured directly:
 ## Verifying it
 
 ```bash
-pnpm build && pnpm test:e2e
+pnpm test:codec            # codec selection, chromium + firefox
+pnpm build && pnpm test:e2e  # full streaming round-trip, chromium
 ```
+
+`test:codec` checks that every track layout (video+audio, video-only, audio-only) picks a mime
+type that **actually produces bytes**, in both engines. `SKIP_FIREFOX=1` exists for environments
+that can't launch it, not as a convenience — Firefox is the engine that catches this class of
+bug, and the summary line says so when it's skipped.
 
 Drives two real Chromium pages against the live relay using a synthetic camera
 (`--use-fake-device-for-media-stream`). The viewer always opens *after* the broadcast is
@@ -193,8 +221,10 @@ Covers camera+mic, mic-only, and screen share (`--auto-select-desktop-capture-so
 
 This is a proof of concept, not a streaming stack.
 
-- **Chromium-only in practice.** It depends on WebM MediaRecorder output and MSE playback of the
-  same. Safari won't play it.
+- **Chromium and Firefox; not Safari.** It depends on WebM MediaRecorder output and MSE
+  playback of the same, which Safari won't do.
+- **Screen sharing has no audio in Firefox.** Firefox doesn't capture system audio, so a
+  Firefox screen share is video-only by nature — the stream works, there's just no sound.
 - **Low quality by necessity.** 320x180@15 at 90 kbps is what fits under the relay's
   throughput ceiling with headroom. This approach can't carry a high-bitrate stream, and no
   amount of encoding cleverness changes that — the ceiling is ~32 KB/s.

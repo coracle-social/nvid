@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>codec fixture</title>
+  </head>
+  <body>
+    <!-- Served by Vite so the test exercises the real pickMimeType, not a copy of it. -->
+    <script type="module">
+      import { pickMimeType } from '/src/broadcast.ts'
+      window.pickMimeType = pickMimeType
+      window.fixtureReady = true
+    </script>
+  </body>
+</html>
