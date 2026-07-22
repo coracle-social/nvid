@@ -1,0 +1,33 @@
+{
+  "name": "nvid",
+  "version": "0.1.0",
+  "description": "Proof-of-concept live audio/video streaming over nostr",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "node e2e/stream.test.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "^11.9.0",
+      "onFail": "download"
+    }
+  },
+  "dependencies": {
+    "nostr-tools": "^2.24.0",
+    "solid-js": "^1.9.14"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.1.5",
+    "vite-plugin-solid": "^2.11.13"
+  }
+}
