@@ -57,6 +57,32 @@ export const CAPTURE_HEIGHT = 180
 export const CAPTURE_FPS = 15
 
 /**
+ * Screen shares trade frames for pixels — text has to stay legible, and desktop content is
+ * mostly static. Measured on the same 90 kbps target, capturing a monitor:
+ *
+ *   1280x720@15 → 24.2 KB/s   (over budget; a busy real desktop measured 43 KB/s)
+ *    854x480@10 → 11.9 KB/s
+ *    640x360@10 → 10.1 KB/s
+ *
+ * getDisplayMedia honours sizing, but frequently ignores it on the initial request — the
+ * constraints have to be re-asserted on the track afterwards.
+ */
+export const SCREEN_WIDTH = 854
+export const SCREEN_HEIGHT = 480
+export const SCREEN_FPS = 10
+
+/**
+ * Screen content varies far more than a camera does — a static editor and a fullscreen video
+ * are orders of magnitude apart — and overshooting the relay loses long runs of events rather
+ * than degrading. When the wire rate exceeds budget, shed frame rate until it fits. Frame rate
+ * (not resolution) because it can be changed live via applyConstraints without invalidating
+ * the init segment viewers have already decoded.
+ */
+export const MIN_CAPTURE_FPS = 2
+/** Wait a full measurement window after adapting before judging the result. */
+export const ADAPT_COOLDOWN_MS = 5000
+
+/**
  * A chunk over this is dropped rather than silently rejected by the relay. Well under the
  * ~800 KB the relay accepts, and far above a normal chunk at the bitrates above.
  */

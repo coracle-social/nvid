@@ -69,6 +69,26 @@ It's a rate limit, not a cumulative cap — the same 16KB payload sent 4× slowe
 1 MB cleanly. And it doesn't degrade gracefully: past the ceiling you lose long *runs* of
 events, which is exactly what stuttering playback looks like.
 
+Capture is sized per source to fit under it. Screen shares are the awkward case — legibility
+needs pixels, but `getDisplayMedia` hands back a full native monitor unless constrained with
+`max` (it treats `ideal` as a suggestion), and it often ignores sizing on the initial request
+until the constraints are re-asserted on the track:
+
+| capture | wire rate | |
+|---|---|---|
+| screen, unconstrained (1280x720@15) | 24.2 KB/s — 43 KB/s on a busy desktop | over budget |
+| screen, 854x480@10 | 11.9 KB/s | default |
+| camera, 320x180@15 | ~14.5 KB/s | default |
+| mic only | ~4.6 KB/s | |
+
+Because screen content varies by orders of magnitude — a static editor versus a fullscreen
+video — there's also an adaptive backstop: when the measured wire rate exceeds budget, capture
+frame rate is halved (floor `MIN_CAPTURE_FPS`) via `applyConstraints`. Frame rate specifically,
+because it can change live without invalidating the init segment viewers have already decoded.
+Verified by forcing 1920x1080@15: 32.7 KB/s → guard drops to 8 fps → settles ~17.5 KB/s with
+zero failed publishes. It's downshift-only; recovering upward would oscillate around what is a
+cliff rather than a slope.
+
 Everything else follows from fitting under that line:
 
 - **Compression doesn't help.** VP8/Opus payloads are already entropy-coded. Measured on real
@@ -87,8 +107,9 @@ carries the EBML/codec header a decoder needs to initialize; every chunk after i
 That asymmetry drives most of the design:
 
 - **Late joiners.** Someone tuning in at chunk 400 has no header and can decode nothing, so the
-  broadcaster splits chunk 0 and re-publishes just the header every 2s (`INIT_REPUBLISH_MS`).
-  That interval is the worst-case time-to-first-frame.
+  broadcaster splits chunk 0 and re-publishes just the header every second
+  (`INIT_REPUBLISH_MS`). That interval is the worst-case time-to-first-frame, and it's cheap to
+  keep short now that the header is ~200 B rather than a whole media chunk.
 - **Cluster resync.** Timeslice chunks are cut on byte boundaries, not element boundaries —
   measured, every chunk after the first starts *mid-cluster*. Appending a partial cluster
   straight after a header-only init segment feeds the decoder garbage, so the viewer skips
@@ -142,16 +163,19 @@ zero unacked publishes, playback tracking wall clock, no stalls, median and peak
 budget, and non-zero decoded bytes on both tracks (appending to a SourceBuffer without erroring
 is not the same as decoding).
 
+Covers camera+mic, mic-only, and screen share (`--auto-select-desktop-capture-source` makes
+`getDisplayMedia` non-interactive).
+
 ```
-▸ camera + mic
-  broadcaster wire rate 15.3 KB/s / 24.0 KB · failed publishes 0
-  viewer received 99 chunks · 320x180
-  playback advanced 24.1s over 24s wall (101%) · stalls 0/11 · min buffer 0.26s
-  end-to-end latency: median 0.80s · max 0.81s
-  decoded video=178524B audio=75001B
+▸ screen
+  broadcaster wire rate 14.5 KB/s / 24.0 KB · failed publishes 0
+  viewer received 110 chunks · 854x480
+  playback advanced 24.0s over 24s wall (100%) · stalls 0/11 · min buffer 0.70s
+  end-to-end latency: median 1.15s · max 1.23s
+  decoded video=167120B audio=74106B
 ```
 
-`ONLY=camera` / `ONLY=mic` narrows the run when chasing an intermittent failure.
+`ONLY=camera` / `ONLY=mic` / `ONLY=screen` narrows the run when chasing an intermittent failure.
 
 ## Limitations
 
@@ -169,9 +193,13 @@ This is a proof of concept, not a streaming stack.
   no retransmit or FEC.
 - **No fragmentation.** A chunk that exceeds `MAX_EVENT_BYTES` is dropped rather than split
   across events. Fine at these bitrates, but a hard cap.
-- **Bitrate is fixed and open-loop.** The broadcaster reports its wire rate and warns when it
-  exceeds budget, but nothing automatically backs off — real use would drop bitrate in
-  response to publish failures.
+- **Adaptation is one-way and coarse.** Frame rate halves when over budget and never recovers,
+  and the encoder's bitrate target itself is never adjusted (MediaRecorder can't change it
+  without a restart, which would invalidate the init segment mid-stream).
+- **Screen audio depends on what you pick.** Sharing a window on macOS usually yields no audio
+  track; Chrome then records `vp8` rather than the requested `vp8,opus`. The broadcaster
+  advertises what the recorder actually produced, so viewers build a matching SourceBuffer —
+  but there's simply no audio in that case.
 - **Nothing is encrypted or authenticated.** Anyone who knows the stream ID can watch, and
   anyone can publish to it. Real use would want NIP-44 payload encryption and an author filter.
 - Broadcasting needs a secure context. `localhost` qualifies; over LAN you'll need HTTPS, e.g.

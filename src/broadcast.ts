@@ -1,7 +1,9 @@
 import {
+  ADAPT_COOLDOWN_MS,
   AUDIO_BITRATE,
   INIT_REPUBLISH_MS,
   MAX_EVENT_BYTES,
+  MIN_CAPTURE_FPS,
   RELAY_BUDGET_BYTES_PER_SEC,
   TIMESLICE_MS,
   VIDEO_BITRATE,
@@ -17,6 +19,8 @@ export type BroadcastStats = {
   /** Base64 bytes/sec over a trailing window — the number the relay actually cares about. */
   bytesPerSecond: number
   overBudget: boolean
+  /** Current capture frame rate, lowered by the adaptive guard when over budget. */
+  captureFps: number
   /** Publishes the relay never acked. A non-zero value here is what viewers see as stutter. */
   failed: number
 }
@@ -67,6 +71,7 @@ export function startBroadcast({ streamId, stream, onStats, onError }: Broadcast
     lastChunkBytes: 0,
     bytesPerSecond: 0,
     overBudget: false,
+    captureFps: Math.round(stream.getVideoTracks()[0]?.getSettings().frameRate ?? 0),
     failed: 0,
   }
 
@@ -77,6 +82,7 @@ export function startBroadcast({ streamId, stream, onStats, onError }: Broadcast
   let initSegment: Uint8Array | undefined
   let initTimer: ReturnType<typeof setInterval> | undefined
   let stopped = false
+  let lastAdaptAt = 0
 
   const recordRate = (bytes: number) => {
     const now = Date.now()
@@ -87,12 +93,46 @@ export function startBroadcast({ streamId, stream, onStats, onError }: Broadcast
     const total = window.reduce((sum, entry) => sum + entry.bytes, 0)
     stats.bytesPerSecond = Math.round(total / span)
     stats.overBudget = stats.bytesPerSecond > RELAY_BUDGET_BYTES_PER_SEC
+
+    adapt(now)
+  }
+
+  /**
+   * Backstop for content the fixed encoder settings can't handle — mostly screen shares, where
+   * a fullscreen video is orders of magnitude heavier than a static editor. Halves the capture
+   * frame rate whenever the wire rate is over budget, which is the one knob that can be turned
+   * live without invalidating the init segment viewers have already decoded.
+   *
+   * Downshift only: recovering upward risks oscillating around the ceiling, and the ceiling is
+   * a cliff rather than a slope.
+   */
+  const adapt = (now: number) => {
+    const track = stream.getVideoTracks()[0]
+    if (!track || !stats.overBudget) return
+    if (now - lastAdaptAt < ADAPT_COOLDOWN_MS) return // let the measurement window refill
+    if (window.length < 8) return // too few samples to trust the rate
+    if (stats.captureFps <= MIN_CAPTURE_FPS) return
+
+    stats.captureFps = Math.max(MIN_CAPTURE_FPS, Math.round(stats.captureFps / 2))
+    lastAdaptAt = now
+
+    void track.applyConstraints({ frameRate: { max: stats.captureFps } }).catch(() => {})
+    onError(
+      `Over the relay's budget — dropped capture to ${stats.captureFps} fps. Lower the ` +
+        `resolution or bitrate in config.ts for better results.`,
+    )
   }
 
   const publish = async (bytes: Uint8Array, isInit: boolean) => {
+    // Chrome silently drops codecs the stream can't supply: a video-only screen share asked
+    // for as vp8,opus records as plain vp8. Publishing the *requested* string would have
+    // viewers build a SourceBuffer expecting an audio track that never arrives, so advertise
+    // what the recorder actually produced.
+    const actualMimeType = recorder.mimeType || mimeType
+
     // Claim the sequence number synchronously — signing and publishing are async, so two
     // chunks can be in flight at once and must not race for their position in the stream.
-    const template = buildChunkEvent(streamId, seq++, bytes, mimeType, isInit)
+    const template = buildChunkEvent(streamId, seq++, bytes, actualMimeType, isInit)
 
     if (template.content.length > MAX_EVENT_BYTES) {
       onError(
@@ -102,6 +142,11 @@ export function startBroadcast({ streamId, stream, onStats, onError }: Broadcast
       return
     }
 
+    // Measured on attempt, not on success: once the relay starts timing out, successes stop
+    // arriving, and a rate computed from those would fall to zero exactly when the adaptive
+    // guard most needs to see that we're over budget.
+    recordRate(template.content.length)
+
     try {
       const relay = await getRelay()
       await relay.publish(sign(template))
@@ -110,7 +155,6 @@ export function startBroadcast({ streamId, stream, onStats, onError }: Broadcast
       stats.chunks++
       stats.bytesSent += template.content.length
       stats.lastChunkBytes = template.content.length
-      recordRate(template.content.length)
       onStats({ ...stats })
     } catch (error) {
       if (stopped) return
@@ -149,7 +193,7 @@ export function startBroadcast({ streamId, stream, onStats, onError }: Broadcast
   recorder.start(TIMESLICE_MS)
 
   return {
-    mimeType,
+    mimeType: recorder.mimeType || mimeType,
     stop() {
       stopped = true
       clearInterval(initTimer)

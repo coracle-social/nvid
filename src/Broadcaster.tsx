@@ -5,6 +5,9 @@ import {
   CAPTURE_HEIGHT,
   CAPTURE_WIDTH,
   RELAY_BUDGET_BYTES_PER_SEC,
+  SCREEN_FPS,
+  SCREEN_HEIGHT,
+  SCREEN_WIDTH,
   TIMESLICE_MS,
 } from './config'
 import { formatBytes } from './format'
@@ -25,15 +28,40 @@ const VIDEO_CONSTRAINTS: MediaTrackConstraints = {
   frameRate: { ideal: CAPTURE_FPS },
 }
 
-function capture(source: Source): Promise<MediaStream> {
+// Screen shares get more pixels and fewer frames than a camera: desktop content is mostly
+// static, but illegible text makes the whole thing pointless. `max` rather than `ideal` —
+// getDisplayMedia treats `ideal` as a suggestion and will hand back a full 1440p monitor.
+const SCREEN_CONSTRAINTS: MediaTrackConstraints = {
+  width: { max: SCREEN_WIDTH },
+  height: { max: SCREEN_HEIGHT },
+  frameRate: { max: SCREEN_FPS },
+}
+
+async function capture(source: Source): Promise<MediaStream> {
   switch (source) {
     case 'camera':
       return navigator.mediaDevices.getUserMedia({ video: VIDEO_CONSTRAINTS, audio: true })
-    case 'screen':
-      return navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: CAPTURE_FPS } },
+
+    case 'screen': {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: SCREEN_CONSTRAINTS,
         audio: true,
       })
+
+      // getDisplayMedia routinely ignores sizing on the initial request and returns the
+      // native monitor resolution regardless. Re-asserting on the track does stick.
+      const track = stream.getVideoTracks()[0]
+      if (track) {
+        try {
+          await track.applyConstraints(SCREEN_CONSTRAINTS)
+        } catch {
+          // Best effort — the adaptive frame-rate guard is the real backstop.
+        }
+      }
+
+      return stream
+    }
+
     case 'mic':
       return navigator.mediaDevices.getUserMedia({ audio: true })
   }
@@ -178,6 +206,12 @@ export default function Broadcaster(props: { streamId: string }) {
                 <dt>Failed</dt>
                 <dd classList={{ bad: !!stats()?.failed }}>{stats()?.failed ?? 0}</dd>
               </div>
+              <Show when={stats()?.captureFps}>
+                <div>
+                  <dt>Capture</dt>
+                  <dd>{stats()!.captureFps} fps</dd>
+                </div>
+              </Show>
               <div>
                 <dt>Total sent</dt>
                 <dd>{formatBytes(stats()?.bytesSent ?? 0)}</dd>

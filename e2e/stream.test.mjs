@@ -33,6 +33,7 @@ const browser = await chromium.launch({
   args: [
     '--use-fake-device-for-media-stream', // synthetic spinning-ball camera + beeping mic
     '--use-fake-ui-for-media-stream',
+    '--auto-select-desktop-capture-source=Entire screen', // makes getDisplayMedia non-interactive
     '--autoplay-policy=no-user-gesture-required',
     // The broadcaster tab is backgrounded as soon as the viewer opens; without these,
     // Chromium throttles its timers and starves the stream. Real users have theirs focused.
@@ -215,6 +216,9 @@ try {
   }
   if (!only || only === 'mic') {
     await runScenario({ label: 'mic only', source: 'mic', expectVideo: false })
+  }
+  if (!only || only === 'screen') {
+    await runScenario({ label: 'screen', source: 'screen', expectVideo: true })
   }
 } finally {
   await browser.close()
