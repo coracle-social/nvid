@@ -49,15 +49,14 @@ async function capture(source: Source): Promise<MediaStream> {
       })
 
       // getDisplayMedia routinely ignores sizing on the initial request and returns the
-      // native monitor resolution regardless. Re-asserting on the track does stick.
-      const track = stream.getVideoTracks()[0]
-      if (track) {
-        try {
-          await track.applyConstraints(SCREEN_CONSTRAINTS)
-        } catch {
-          // Best effort — the adaptive frame-rate guard is the real backstop.
-        }
-      }
+      // native monitor resolution regardless, so re-assert it on the track.
+      //
+      // Deliberately not awaited: applyConstraints on a *display-capture* track is unreliable
+      // across platforms and can settle late or not at all. Awaiting it meant a screen share
+      // could hang here forever — capture() never resolved, the recorder was never created,
+      // and the broadcast never even opened its relay connection. Best effort only; the
+      // adaptive frame-rate guard is the real backstop.
+      void stream.getVideoTracks()[0]?.applyConstraints(SCREEN_CONSTRAINTS).catch(() => {})
 
       return stream
     }
@@ -181,6 +180,12 @@ export default function Broadcaster(props: { streamId: string }) {
         <Show when={broadcast()}>
           {handle => (
             <dl class="stats">
+              <div>
+                <dt>Relay</dt>
+                <dd classList={{ ok: stats()?.connected, bad: stats() && !stats()!.connected }}>
+                  {stats()?.connected ? 'connected' : 'connecting…'}
+                </dd>
+              </div>
               <div>
                 <dt>Codec</dt>
                 <dd>{handle().mimeType}</dd>

@@ -19,6 +19,8 @@ export type BroadcastStats = {
   /** Base64 bytes/sec over a trailing window — the number the relay actually cares about. */
   bytesPerSecond: number
   overBudget: boolean
+  /** Whether the relay websocket is up. Connected eagerly, not on first publish. */
+  connected: boolean
   /** Current capture frame rate, lowered by the adaptive guard when over budget. */
   captureFps: number
   /** Publishes the relay never acked. A non-zero value here is what viewers see as stutter. */
@@ -71,6 +73,7 @@ export function startBroadcast({ streamId, stream, onStats, onError }: Broadcast
     lastChunkBytes: 0,
     bytesPerSecond: 0,
     overBudget: false,
+    connected: false,
     captureFps: Math.round(stream.getVideoTracks()[0]?.getSettings().frameRate ?? 0),
     failed: 0,
   }
@@ -192,11 +195,38 @@ export function startBroadcast({ streamId, stream, onStats, onError }: Broadcast
   recorder.onerror = () => onError('MediaRecorder failed.')
   recorder.start(TIMESLICE_MS)
 
+  // Connect up front rather than lazily on the first publish. The relay connection used to be
+  // established inside publish(), which meant the whole send path was gated behind media
+  // actually flowing — anything that stalled capture left the broadcast with no websocket at
+  // all and no indication of why. It also keeps connection setup off the first chunk's latency.
+  void getRelay().then(
+    () => {
+      if (stopped) return
+      stats.connected = true
+      onStats({ ...stats })
+    },
+    (error: unknown) => {
+      if (!stopped) onError(`Relay connection failed: ${error}`)
+    },
+  )
+
+  // Screen capture is change-driven: a perfectly static desktop can produce little or no
+  // encoded output, and zero-length chunks are skipped. Say so rather than sitting silent.
+  const silenceWatchdog = setTimeout(() => {
+    if (!stopped && !stats.chunks) {
+      onError(
+        'Capture has produced no data yet. If you shared a static screen, try moving a ' +
+          'window — screen capture only emits frames when something changes.',
+      )
+    }
+  }, 4000)
+
   return {
     mimeType: recorder.mimeType || mimeType,
     stop() {
       stopped = true
       clearInterval(initTimer)
+      clearTimeout(silenceWatchdog)
       if (recorder.state !== 'inactive') recorder.stop()
       for (const track of stream.getTracks()) track.stop()
     },

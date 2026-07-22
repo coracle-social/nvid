@@ -134,6 +134,18 @@ That asymmetry drives most of the design:
 Streams are addressed by their `t` tag, not by author, so each tab signs with a throwaway key
 held in `sessionStorage`. A NIP-07 extension would mean a permission prompt per chunk.
 
+### Don't gate the connection behind the media
+
+The relay connection is opened when the broadcast starts, not lazily on the first publish. It
+used to be the latter, which quietly coupled two unrelated things: *any* stall in capture meant
+no websocket was ever opened, with nothing in the UI to say so. Screen sharing hit this two
+ways — `applyConstraints` on a display-capture track can settle late or never (it's now fired
+and forgotten rather than awaited), and screen capture is change-driven, so a perfectly static
+desktop can produce no encoded output at all.
+
+Both are now visible rather than silent: the panel shows relay connection state, and a watchdog
+speaks up if capture produces nothing within a few seconds.
+
 ### Relay behaviour
 
 `bucket.coracle.social` describes itself as "a relay which only stores events for 30 seconds",

@@ -43,6 +43,16 @@ const browser = await chromium.launch({
   ],
 })
 
+/** Read a stat by its <dt> label — the panel's row order changes, the labels don't. */
+const statOf = (page, label) =>
+  page.evaluate(
+    name =>
+      [...document.querySelectorAll('.stats > div')]
+        .find(d => d.querySelector('dt')?.innerText === name)
+        ?.querySelector('dd')?.innerText ?? '',
+    label,
+  )
+
 const failures = []
 const fail = message => {
   console.error(`  ✗ ${message}`)
@@ -64,18 +74,22 @@ async function runScenario({ label, source, expectVideo }) {
 
     await broadcaster.locator('.stats').waitFor({ timeout: 15_000 })
     await broadcaster.waitForFunction(
-      // The events cell reads like "8 (~2.0/s)", so parse the leading integer.
+      // The events cell reads like "8 (~4.0/s)", so parse the leading integer.
       () =>
         parseInt(
-          document.querySelectorAll('.stats > div')[1]?.querySelector('dd')?.innerText ?? '',
+          [...document.querySelectorAll('.stats > div')]
+            .find(d => d.querySelector('dt')?.innerText === 'Events')
+            ?.querySelector('dd')?.innerText ?? '',
           10,
         ) >= 4,
       { timeout: 25_000 },
     )
 
-    const codec = await broadcaster.locator('.stats > div:nth-child(1) dd').innerText()
-    const sent = await broadcaster.locator('.stats > div:nth-child(2) dd').innerText()
-    console.log(`  broadcaster: ${codec.trim()} · ${sent.trim()} events`)
+    const codec = await statOf(broadcaster, 'Codec')
+    const sent = await statOf(broadcaster, 'Events')
+    const relay = await statOf(broadcaster, 'Relay')
+    console.log(`  broadcaster: ${codec.trim()} · ${sent.trim()} events · relay ${relay.trim()}`)
+    if (relay.trim() !== 'connected') fail(`${label}: relay websocket not connected`)
 
     const viewer = await context.newPage()
     viewer.on('console', m => m.type() === 'error' && console.log('  [vw]', m.text()))
@@ -140,12 +154,9 @@ async function runScenario({ label, source, expectVideo }) {
     const elapsed = (SAMPLES * INTERVAL) / 1000
     const advanced = last.t - first.t
 
-    const received = (await viewer.locator('.stats > div:nth-child(1) dd').innerText()).trim()
-    const wireRate = (await broadcaster.locator('.stats > div:nth-child(4) dd').innerText()).trim()
-    const failed = parseInt(
-      await broadcaster.locator('.stats > div:nth-child(5) dd').innerText(),
-      10,
-    )
+    const received = (await statOf(viewer, 'Chunks')).trim()
+    const wireRate = (await statOf(broadcaster, 'Wire rate')).trim()
+    const failed = parseInt(await statOf(broadcaster, 'Failed'), 10)
 
     const dimensions = expectVideo ? `${first.w}x${first.h}` : 'audio-only'
     console.log(`  broadcaster wire rate ${wireRate.replace(/\s+/g, ' ')} · failed publishes ${failed}`)
@@ -174,6 +185,10 @@ async function runScenario({ label, source, expectVideo }) {
       fail(`${label}: playback fell behind wall clock (${advanced.toFixed(1)}s / ${elapsed}s)`)
     }
     if (stalls > 1) fail(`${label}: ${stalls} stalls during playback`)
+    // The silence watchdog and the adaptive guard both report through .error; neither should
+    // fire on a healthy stream, so any text here is a false positive worth catching.
+    const bcError = await broadcaster.locator('.error').innerText().catch(() => '')
+    if (bcError.trim()) fail(`${label}: broadcaster reported "${bcError.trim()}"`)
     // Latency is the thing smoothness fixes are always tempted to trade away, so pin it.
     if (!Number.isFinite(medianLatency)) fail(`${label}: no latency measurement`)
     else if (medianLatency > 1.5) fail(`${label}: median latency ${medianLatency.toFixed(2)}s > 1.5s`)
